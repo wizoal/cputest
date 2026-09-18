@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Crypto Burner PWA</title>
+    <style>
+        body { background: #0a0a0a; color: #00ff66; font-family: monospace; padding: 20px; text-align: center; }
+        button { background: #ff3333; color: white; border: none; padding: 15px 30px; font-size: 16px; font-weight: bold; border-radius: 4px; cursor: pointer; box-shadow: 0 0 15px rgba(255,51,51,0.4); }
+        button:disabled { background: #333; color: #777; box-shadow: none; }
+        .log-box { background: #111; border: 1px solid #00ff66; padding: 15px; margin: 20px auto; max-width: 500px; text-align: left; font-size: 13px; line-height: 1.5; box-shadow: inset 0 0 10px #000; }
+        .stat { display: flex; justify-content: space-between; border-bottom: 1px dashed #333; padding: 5px 0; }
+        canvas { width: 100%; max-width: 500px; height: 100px; background: #000; border: 1px solid #333; margin-top: 10px; }
+    </style>
+</head>
+<body>
+
+    <h2>🔥 CRYPTO-WASM MATRIX BURNER 🔥</h2>
+    <p>Имитация Wasm-майнинга Scrypt/Cryptonight для максимального износа батареи.</p>
+    
+    <button id="startBtn">ЗАПУСТИТЬ МАЙНИНГ-ПОТОКИ</button>
+
+    <div class="log-box">
+        <div class="stat"><span>Wake Lock (Экран):</span><span id="wakeLock">ВЫКЛ</span></div>
+        <div class="stat"><span>Майнинг-потоки (Workers):</span><span id="threads">0</span></div>
+        <div class="stat"><span>Вычислено хэшей:</span><span id="hashCount">0</span></div>
+        <div class="stat"><span>Нагрузка на ОЗУ:</span><span id="ramLoad">0 MB</span></div>
+        <div class="stat"><span>GPU Отрисовка:</span><span id="gpuStatus">0 FPS</span></div>
+    </div>
+
+    <canvas id="matrixCanvas"></canvas>
+
+    <script>
+        const startBtn = document.getElementById('startBtn');
+        const hashCountEl = document.getElementById('hashCount');
+        const canvas = document.getElementById('matrixCanvas');
+        const ctx = canvas.getContext('2d');
+
+        let totalHashes = 0;
+        let isRunning = false;
+
+        // --- Внутренний JS-скрипт для "майнера" (запускается в изолированных потоках) ---
+        // Алгоритм Scrypt забивает кэш процессора и оперативную память бесконечным перебором
+        const minerScript = `
+            self.onmessage = function(e) {
+                // Имитация тяжелого криптографического хэширования (Scrypt-подобный цикл)
+                function heavyHash(input) {
+                    let r = input;
+                    // Создаем огромный массив в памяти для создания дефицита ОЗУ
+                    let memoryGobbler = new Uint32Array(1024 * 1024 * 2); // ~8MB на один поток
+                    for (let i = 0; i < memoryGobbler.length; i++) {
+                        memoryGobbler[i] = Math.sin(i) * 100000;
+                    }
+                    // Бесконечный цикл пересчета хэшей
+                    while(true) {
+                        for(let i = 0; i < 50000; i++) {
+                            r = Math.tan(Math.log(Math.abs(r))) * Math.cos(r);
+                            // Хаотично читаем из памяти, заставляя процессор ждать данные (нагрев шины)
+                            let idx = Math.abs(Math.floor(r)) % memoryGobbler.length;
+                            memoryGobbler[idx] ^= i;
+                        }
+                        self.postMessage({type: 'hash'});
+                    }
+                }
+                heavyHash(Math.random());
+            };
+        `;
+
+        const blob = new Blob([minerScript], { type: 'application/javascript' });
+        const workerUrl = URL.createObjectURL(blob);
+
+        // Функция удержания экрана
+        async function initWakeLock() {
+            if ('wakeLock' in navigator) {
+                try {
+                    await navigator.wakeLock.request('screen');
+                    document.getElementById('wakeLock').textContent = 'АКТИВЕН (100% яркость)';
+                    document.getElementById('wakeLock').style.color = '#00ff66';
+                } catch (e) {}
+            }
+        }
+
+        // Эффект "Матрицы" на Canvas для жесткой нагрузки на GPU
+        let lTime;
+        function renderMatrix() {
+            if (!isRunning) return;
+            canvas.width = canvas.clientWidth;
+            canvas.height = canvas.clientHeight;
+            
+            // Нагружаем GPU миллионами пикселей
+            for (let i = 0; i < 3000; i++) {
+                ctx.fillStyle = \`rgba(0, \${Math.floor(Math.random()*155)+100}, 0, 0.8)\`;
+                ctx.fillRect(Math.random() * canvas.width, Math.random() * canvas.height, 2, 2);
+            }
+
+            if (!lTime) { lTime = performance.now(); } 
+            else {
+                let delta = (performance.now() - lTime) / 1000;
+                lTime = performance.now();
+                document.getElementById('gpuStatus').textContent = Math.round(1 / delta) + ' FPS';
+            }
+            requestAnimationFrame(renderMatrix);
+        }
+
+        // Запуск
+        startBtn.addEventListener('click', async () => {
+            if (isRunning) return;
+            isRunning = true;
+            startBtn.disabled = true;
+            startBtn.textContent = 'МАЙНИНГ ЗАПУЩЕН';
+
+            await initWakeLock();
+
+            // Определяем ядра процессора (у iPhone обычно 6 ядер)
+            const cores = navigator.hardwareConcurrency || 4;
+            document.getElementById('threads').textContent = cores;
+            document.getElementById('ramLoad').textContent = (cores * 8) + ' MB';
+
+            // Разворачиваем потоки-"майнеры"
+            for (let i = 0; i < cores; i++) {
+                const worker = new Worker(workerUrl);
+                worker.onmessage = function(e) {
+                    if(e.data.type === 'hash') {
+                        totalHashes += 50000;
+                        hashCountEl.textContent = totalHashes.toLocaleString();
+                    }
+                };
+                worker.postMessage('start');
+            }
+
+            renderMatrix();
+        });
+    </script>
+</body>
+</html>
